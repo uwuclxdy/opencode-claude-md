@@ -30,20 +30,14 @@ Whatever opencode's native instruction loader already picked up (its first-match
 Global (all projects):
 
 ```sh
-git clone https://github.com/uwuclxdy/opencode-claude-md
-mkdir -p ~/.config/opencode/plugins
-ln -s "$PWD/opencode-claude-md/index.ts" ~/.config/opencode/plugins/opencode-claude-md.ts
+opencode plugin opencode-claude-md -g
 ```
 
-Or per project: drop `index.ts` into `.opencode/plugins/`.
-
-Or via `opencode.json` once published to npm:
+Drop `-g` to install for the current project only, or add it to `opencode.json` yourself:
 
 ```json
 { "plugin": ["opencode-claude-md"] }
 ```
-
-The plugin only uses type imports, so the single file works without `node_modules`.
 
 ## Alternatives
 
