@@ -1,6 +1,6 @@
-# opencode-claude-md: load CLAUDE.md files in opencode like Claude Code does
+# CLAUDE.md for opencode
 
-An [opencode](https://opencode.ai) plugin that loads the full CLAUDE.md hierarchy at session start. Every ancestor directory, `CLAUDE.local.md`, `@path` imports, managed policy files. If Claude Code would read it, opencode reads it too.
+An [opencode](https://opencode.ai) plugin that loads CLAUDE.md files the way Claude Code does: the full ancestor hierarchy, `CLAUDE.local.md`, `@path` imports, managed policy files, and subdirectory files as tools touch them. If Claude Code would read it, opencode reads it too.
 
 ## Why opencode's built-in CLAUDE.md support isn't enough
 
@@ -21,7 +21,7 @@ This plugin closes the gap:
 
 Two safety rules on top of Claude Code's behavior, since a plugin can't show approval dialogs: an `@import` only resolves if its target (realpath, so symlinks can't cheat) lives under the worktree or under the importing file's own directory, and any `<system-reminder>` tag inside file content is escaped so instruction files can't forge wrapper tags.
 
-Content is injected once per session as a `<system-reminder>` text part prepended to the first user message, with per-file labels matching Claude Code's ("project instructions, checked into the codebase", and so on). Subdirectory files load mid-session instead: when a tool touches a file below cwd, any not-yet-loaded `CLAUDE.md` / `CLAUDE.local.md` on that path is appended to the tool result, which is also how Claude Code delivers them. After a `/compact`, startup files re-inject on the next message and subdirectory files re-attach on the next read.
+Content is injected once per session as a synthetic `<system-reminder>` text part prepended to the first user message (hidden in the TUI, visible to the model), with per-file labels matching Claude Code's ("project instructions, checked into the codebase", and so on). Subdirectory files load mid-session instead: when a tool touches a file below cwd, any not-yet-loaded `CLAUDE.md` / `CLAUDE.local.md` on that path is appended to the tool result, which is also how Claude Code delivers them. After a `/compact`, startup files re-inject on the next message and subdirectory files re-attach on the next read.
 
 Whatever opencode's native instruction loader already picked up (its first-match `AGENTS.md`/`CLAUDE.md`/`CONTEXT.md` plus the global pick) is skipped, so nothing reaches the model twice.
 

@@ -292,7 +292,21 @@ export const OpenClaudeMd: Plugin = async (input) => {
         if (sessions.has(input.sessionID)) return
         const { text, seen } = assemble(directory, worktree, worktreeReal)
         sessions.set(input.sessionID, { dirs: new Set(ancestorDirs(directory)), files: seen })
-        if (text) output.parts.unshift({ type: "text", text } as any)
+        if (!text) return
+        // opencode persists hook-added parts verbatim (no id backfill);
+        // a part missing id/sessionID/messageID fails schema validation
+        // downstream and kills the whole message. synthetic = hidden in
+        // the TUI but still sent to the model.
+        const messageID = input.messageID ?? output.message?.id
+        if (!messageID) return
+        output.parts.unshift({
+          id: `prt_ocm${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`,
+          sessionID: input.sessionID,
+          messageID,
+          type: "text",
+          text,
+          synthetic: true,
+        } as any)
       } catch (err) {
         // never crash the host process over instruction loading
         console.error("[opencode-claude-md]", err)
