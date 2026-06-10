@@ -15,8 +15,10 @@ This plugin closes the gap:
 | every `CLAUDE.md` from filesystem root down to cwd | ✓ (ancestors first, cwd last) |
 | `.claude/CLAUDE.md` at each level | ✓ |
 | `CLAUDE.local.md` at each level | ✓ (after `CLAUDE.md` of the same dir) |
-| `@path/to/file` imports | ✓ (relative / absolute / `~/`, max 4 hops, ignored inside code fences and inline spans) |
+| `@path/to/file` imports | ✓ (max 4 hops, ignored inside code fences and inline spans) |
 | HTML comments | stripped before injection |
+
+Two safety rules on top of Claude Code's behavior, since a plugin can't show approval dialogs: an `@import` only resolves if its target (realpath, so symlinks can't cheat) lives under the worktree or under the importing file's own directory, and any `<system-reminder>` tag inside file content is escaped so instruction files can't forge wrapper tags.
 
 Content is injected once per session as a `<system-reminder>` text part prepended to the first user message, with per-file labels matching Claude Code's ("project instructions, checked into the codebase", and so on). After a `/compact` it re-injects on the next message.
 
@@ -67,7 +69,7 @@ opencode itself autoloads `~/.claude/CLAUDE.md` when `~/.config/opencode/AGENTS.
 
 ### Do `@path` imports in CLAUDE.md work in opencode?
 
-Natively no. With this plugin yes: relative, absolute, and `~/` paths, up to 4 hops deep, with imports inside code fences and inline code spans ignored, same as Claude Code.
+Natively no. With this plugin yes: up to 4 hops deep, with imports inside code fences and inline code spans ignored, same as Claude Code. One deviation: targets outside the worktree (or the importing file's directory) are refused, because Claude Code gates those behind an approval dialog and a plugin can't ask.
 
 ### Can instructions end up in the context twice?
 

@@ -7,8 +7,9 @@
  *   - ~/.claude/CLAUDE.md (user global)
  *   - every CLAUDE.md / .claude/CLAUDE.md / CLAUDE.local.md walking from
  *     the filesystem root down to cwd (ancestors first, cwd last)
- *   - @path imports, max 4 hops, ignored inside code fences/spans
- *   - HTML comments stripped
+ *   - @path imports, max 4 hops, ignored inside code fences/spans,
+ *     confined to the worktree or the importing file's directory
+ *   - HTML comments stripped, <system-reminder> tags in content escaped
  *
  * Skips whatever opencode's native instruction loader already injects
  * (first AGENTS.md/CLAUDE.md/CONTEXT.md found between cwd and the
@@ -18,9 +19,9 @@
  * node_modules when dropped into a plugins directory.
  */
 import type { Plugin } from "@opencode-ai/plugin"
-import { readFileSync, statSync } from "node:fs"
+import { readFileSync, realpathSync, statSync } from "node:fs"
 import { homedir } from "node:os"
-import { dirname, isAbsolute, join, resolve } from "node:path"
+import { dirname, isAbsolute, join, relative, resolve } from "node:path"
 
 const MAX_IMPORT_DEPTH = 4
 
@@ -59,6 +60,24 @@ function readText(p: string): string | undefined {
 
 function stripHtmlComments(text: string): string {
   return text.replace(/<!--[\s\S]*?-->/g, "")
+}
+
+/** Instruction files must not be able to forge or close the wrapper tag. */
+function sanitizeReminderTags(text: string): string {
+  return text.replace(/<(\/?)system-reminder/gi, "&lt;$1system-reminder")
+}
+
+function safeReal(p: string): string | undefined {
+  try {
+    return realpathSync(p)
+  } catch {
+    return undefined
+  }
+}
+
+function isWithin(child: string, parent: string): boolean {
+  const rel = relative(parent, child)
+  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel))
 }
 
 /** Find @path import targets, skipping fenced code blocks and inline code spans. */
@@ -105,6 +124,7 @@ function collectFile(
   depth: number,
   seen: Set<string>,
   blocks: Block[],
+  worktreeReal: string,
 ): void {
   if (seen.has(path)) return
   seen.add(path)
@@ -112,13 +132,20 @@ function collectFile(
   if (raw === undefined) return
   const content = stripHtmlComments(raw).trim()
   if (!content) return
-  blocks.push({ path, label, content })
+  blocks.push({ path, label, content: sanitizeReminderTags(content) })
   if (depth >= MAX_IMPORT_DEPTH) return
+  const importerDir = safeReal(dirname(path))
   for (const target of findImports(content)) {
     const resolved = resolveImport(target, path)
-    if (isFile(resolved)) {
-      collectFile(resolved, `imported by ${path}`, depth + 1, seen, blocks)
-    }
+    if (!isFile(resolved)) continue
+    // confine imports: an instruction file may only pull in files under the
+    // worktree or under its own directory — never arbitrary local paths
+    // (Claude Code gates external imports behind an approval dialog; a
+    // plugin has no dialog, so it refuses instead)
+    const real = safeReal(resolved)
+    if (!real) continue
+    if (!isWithin(real, worktreeReal) && !(importerDir && isWithin(real, importerDir))) continue
+    collectFile(resolved, `imported by ${path}`, depth + 1, seen, blocks, worktreeReal)
   }
 }
 
@@ -182,9 +209,10 @@ function assemble(directory: string, worktree: string): string {
   const skip = nativelyLoaded(directory, worktree)
   const seen = new Set<string>()
   const blocks: Block[] = []
+  const worktreeReal = safeReal(resolve(worktree)) ?? resolve(worktree)
 
   const collect = (path: string, label: string) => {
-    if (!skip.has(path) && isFile(path)) collectFile(path, label, 0, seen, blocks)
+    if (!skip.has(path) && isFile(path)) collectFile(path, label, 0, seen, blocks, worktreeReal)
   }
 
   collect(managedPolicyPath(), LABELS.managed)
