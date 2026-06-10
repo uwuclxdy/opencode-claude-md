@@ -1,0 +1,26 @@
+{
+  "name": "opencode-claude-md",
+  "version": "0.1.0",
+  "description": "opencode plugin that loads CLAUDE.md files the way Claude Code does at session start",
+  "type": "module",
+  "main": "./index.ts",
+  "files": [
+    "index.ts"
+  ],
+  "license": "MIT",
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "claude",
+    "claude-md",
+    "memory",
+    "instructions"
+  ],
+  "dependencies": {
+    "@opencode-ai/plugin": "^1.16.2"
+  },
+  "devDependencies": {
+    "@types/node": "^25.9.2",
+    "typescript": "^6.0.3"
+  }
+}
