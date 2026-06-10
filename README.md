@@ -13,7 +13,7 @@ This plugin closes the gap:
 | managed policy (`/etc/claude-code/CLAUDE.md`, per-OS) | ✓ |
 | `~/.claude/CLAUDE.md` (user global) | ✓ |
 | every `CLAUDE.md` from filesystem root down to cwd | ✓ (ancestors first, cwd last) |
-| `.claude/CLAUDE.md` at each level | ✓ |
+| `.claude/CLAUDE.md` at each level | ✓ (Claude Code documents this location at the project root only; the plugin checks every level) |
 | `CLAUDE.local.md` at each level | ✓ (after `CLAUDE.md` of the same dir) |
 | `@path/to/file` imports | ✓ (max 4 hops, ignored inside code fences and inline spans) |
 | HTML comments | stripped before injection |
@@ -69,7 +69,7 @@ opencode itself autoloads `~/.claude/CLAUDE.md` when `~/.config/opencode/AGENTS.
 
 ### Do `@path` imports in CLAUDE.md work in opencode?
 
-Natively no. With this plugin yes: up to 4 hops deep, with imports inside code fences and inline code spans ignored, same as Claude Code. One deviation: targets outside the worktree (or the importing file's directory) are refused, because Claude Code gates those behind an approval dialog and a plugin can't ask.
+Natively no. With this plugin yes: relative, absolute, and `~/` paths, up to 4 hops deep, same as Claude Code documents. Two conservative choices on top, since Claude Code's docs don't specify them: imports inside code fences and inline code spans are ignored, and targets outside the worktree (or the importing file's directory) are refused. Claude Code gates external imports behind an approval dialog; a plugin can't ask, so it refuses.
 
 ### Can instructions end up in the context twice?
 
