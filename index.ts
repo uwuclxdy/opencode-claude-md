@@ -7,6 +7,8 @@
  *   - ~/.claude/CLAUDE.md (user global)
  *   - every CLAUDE.md / .claude/CLAUDE.md / CLAUDE.local.md walking from
  *     the filesystem root down to cwd (ancestors first, cwd last)
+ *   - subdirectory CLAUDE.md files lazily, attached to tool results when
+ *     a tool first touches a file in that subtree
  *   - @path imports, max 4 hops, ignored inside code fences/spans,
  *     confined to the worktree or the importing file's directory
  *   - HTML comments stripped, <system-reminder> tags in content escaped
@@ -21,7 +23,7 @@
 import type { Plugin } from "@opencode-ai/plugin"
 import { readFileSync, realpathSync, statSync } from "node:fs"
 import { homedir } from "node:os"
-import { dirname, isAbsolute, join, relative, resolve } from "node:path"
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path"
 
 const MAX_IMPORT_DEPTH = 4
 
@@ -205,11 +207,40 @@ function nativelyLoaded(directory: string, worktree: string): Set<string> {
   return native
 }
 
-function assemble(directory: string, worktree: string): string {
+function render(blocks: Block[], intro: string): string {
+  if (blocks.length === 0) return ""
+  const body = blocks
+    .map((b) => `Contents of ${b.path} (${b.label}):\n\n${b.content}`)
+    .join("\n\n")
+  return ["<system-reminder>", intro, "", body, "</system-reminder>"].join("\n")
+}
+
+/** Collect the per-directory instruction files of a single directory. */
+function collectDir(
+  dir: string,
+  seen: Set<string>,
+  blocks: Block[],
+  worktreeReal: string,
+  skip?: Set<string>,
+): void {
+  const candidates: Array<[string, string]> = [
+    [join(dir, "CLAUDE.md"), LABELS.project],
+    [join(dir, ".claude", "CLAUDE.md"), LABELS.project],
+    [join(dir, "CLAUDE.local.md"), LABELS.local],
+  ]
+  for (const [path, label] of candidates) {
+    if (!skip?.has(path) && isFile(path)) collectFile(path, label, 0, seen, blocks, worktreeReal)
+  }
+}
+
+function assemble(
+  directory: string,
+  worktree: string,
+  worktreeReal: string,
+): { text: string; seen: Set<string> } {
   const skip = nativelyLoaded(directory, worktree)
   const seen = new Set<string>()
   const blocks: Block[] = []
-  const worktreeReal = safeReal(resolve(worktree)) ?? resolve(worktree)
 
   const collect = (path: string, label: string) => {
     if (!skip.has(path) && isFile(path)) collectFile(path, label, 0, seen, blocks, worktreeReal)
@@ -217,52 +248,84 @@ function assemble(directory: string, worktree: string): string {
 
   collect(managedPolicyPath(), LABELS.managed)
   collect(join(homedir(), ".claude", "CLAUDE.md"), LABELS.global)
-  for (const dir of ancestorDirs(directory)) {
-    collect(join(dir, "CLAUDE.md"), LABELS.project)
-    collect(join(dir, ".claude", "CLAUDE.md"), LABELS.project)
-    collect(join(dir, "CLAUDE.local.md"), LABELS.local)
-  }
+  for (const dir of ancestorDirs(directory)) collectDir(dir, seen, blocks, worktreeReal, skip)
 
-  if (blocks.length === 0) return ""
-  const body = blocks
-    .map((b) => `Contents of ${b.path} (${b.label}):\n\n${b.content}`)
-    .join("\n\n")
-  return [
-    "<system-reminder>",
-    "As you answer the user's questions, you can use the following context.",
-    "IMPORTANT: These instructions OVERRIDE any default behavior and you MUST follow them exactly as written.",
-    "",
-    body,
-    "</system-reminder>",
-  ].join("\n")
+  const text = render(
+    blocks,
+    [
+      "As you answer the user's questions, you can use the following context.",
+      "IMPORTANT: These instructions OVERRIDE any default behavior and you MUST follow them exactly as written.",
+    ].join("\n"),
+  )
+  return { text, seen }
 }
 
 function sessionIdOf(properties: any): string | undefined {
   return properties?.sessionID ?? properties?.info?.id
 }
 
+interface SessionState {
+  // directories whose instruction files are already in context
+  dirs: Set<string>
+  // instruction files already in context (incl. expanded imports)
+  files: Set<string>
+}
+
 export const OpenClaudeMd: Plugin = async (input) => {
   const directory = resolve(input.directory)
   const worktree = resolve(input.worktree)
-  const injected = new Set<string>()
+  const worktreeReal = safeReal(worktree) ?? worktree
+  const sessions = new Map<string, SessionState>()
 
   return {
     event: async ({ event }) => {
       const id = sessionIdOf((event as any).properties)
       if (!id) return
-      // re-inject on the next message after compaction; forget dead sessions
-      if (event.type === "session.compacted") injected.delete(id)
-      if (event.type === "session.deleted") injected.delete(id)
+      // dropping the state re-injects everything on the next message /
+      // re-attaches subdir files on the next read, like Claude Code
+      if (event.type === "session.compacted") sessions.delete(id)
+      if (event.type === "session.deleted") sessions.delete(id)
     },
 
     "chat.message": async (input, output) => {
       try {
-        if (injected.has(input.sessionID)) return
-        injected.add(input.sessionID)
-        const text = assemble(directory, worktree)
+        if (sessions.has(input.sessionID)) return
+        const { text, seen } = assemble(directory, worktree, worktreeReal)
+        sessions.set(input.sessionID, { dirs: new Set(ancestorDirs(directory)), files: seen })
         if (text) output.parts.unshift({ type: "text", text } as any)
       } catch (err) {
         // never crash the host process over instruction loading
+        console.error("[opencode-claude-md]", err)
+      }
+    },
+
+    // lazy per-subdirectory loading: when a tool touches a file below cwd,
+    // attach the not-yet-loaded CLAUDE.md files on that path to the tool
+    // result, the way Claude Code does mid-session
+    "tool.execute.after": async (input, output) => {
+      try {
+        if (!["read", "edit", "write"].includes(input.tool)) return
+        const state = sessions.get(input.sessionID)
+        if (!state) return
+        const filePath = (input as any).args?.filePath
+        if (typeof filePath !== "string") return
+        const fileDir = dirname(resolve(directory, filePath))
+        const rel = relative(directory, fileDir)
+        if (rel === "" || rel.startsWith("..") || isAbsolute(rel)) return
+        const blocks: Block[] = []
+        let dir = directory
+        for (const segment of rel.split(sep)) {
+          dir = join(dir, segment)
+          if (state.dirs.has(dir)) continue
+          state.dirs.add(dir)
+          collectDir(dir, state.files, blocks, worktreeReal)
+        }
+        const text = render(
+          blocks,
+          "The following instruction files apply to the directory subtree this tool just touched. Adhere to them.",
+        )
+        if (text) output.output += `\n\n${text}`
+      } catch (err) {
         console.error("[opencode-claude-md]", err)
       }
     },

@@ -16,11 +16,12 @@ This plugin closes the gap:
 | `.claude/CLAUDE.md` at each level | ✓ (Claude Code documents this location at the project root only; the plugin checks every level) |
 | `CLAUDE.local.md` at each level | ✓ (after `CLAUDE.md` of the same dir) |
 | `@path/to/file` imports | ✓ (max 4 hops, ignored inside code fences and inline spans) |
+| `CLAUDE.md` in subdirectories below cwd | ✓ (lazily: attached to the tool result when a file in that subtree is first read, edited, or written) |
 | HTML comments | stripped before injection |
 
 Two safety rules on top of Claude Code's behavior, since a plugin can't show approval dialogs: an `@import` only resolves if its target (realpath, so symlinks can't cheat) lives under the worktree or under the importing file's own directory, and any `<system-reminder>` tag inside file content is escaped so instruction files can't forge wrapper tags.
 
-Content is injected once per session as a `<system-reminder>` text part prepended to the first user message, with per-file labels matching Claude Code's ("project instructions, checked into the codebase", and so on). After a `/compact` it re-injects on the next message.
+Content is injected once per session as a `<system-reminder>` text part prepended to the first user message, with per-file labels matching Claude Code's ("project instructions, checked into the codebase", and so on). Subdirectory files load mid-session instead: when a tool touches a file below cwd, any not-yet-loaded `CLAUDE.md` / `CLAUDE.local.md` on that path is appended to the tool result, which is also how Claude Code delivers them. After a `/compact`, startup files re-inject on the next message and subdirectory files re-attach on the next read.
 
 Whatever opencode's native instruction loader already picked up (its first-match `AGENTS.md`/`CLAUDE.md`/`CONTEXT.md` plus the global pick) is skipped, so nothing reaches the model twice.
 
@@ -77,7 +78,6 @@ No. The plugin replicates opencode's native pick logic and skips those files, an
 
 ## Out of scope
 
-- Lazy per-subdirectory `CLAUDE.md` loading when files below cwd are read (Claude Code does this mid-session; here only session start is covered).
 - `.claude/rules/*.md` path-scoped rules.
 
 ## Development
