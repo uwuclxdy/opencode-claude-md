@@ -9,8 +9,8 @@
  *     the filesystem root down to cwd (ancestors first, cwd last)
  *   - subdirectory CLAUDE.md files lazily, attached to tool results when
  *     a tool first touches a file in that subtree
- *   - @path imports, max 4 hops, ignored inside code fences/spans,
- *     confined to the worktree or the importing file's directory
+ *   - @path imports, max 4 hops, ignored inside code fences/spans and
+ *     indented code blocks, confined to the worktree or the importing file's dir
  *   - HTML comments stripped, <system-reminder> tags in content escaped
  *
  * Skips whatever opencode's native instruction loader already injects
@@ -104,6 +104,9 @@ function findImports(text: string): string[] {
       fence = { char: delim[1][0], len: delim[1].length }
       continue
     }
+    // a line indented >= 4 columns (tab = one stop) is a markdown indented
+    // code block, so it can't introduce an @import
+    if (/^(?:\t| {4})/.test(line)) continue
     const scannable = line.replace(/`[^`]*`/g, "")
     for (const match of scannable.matchAll(/(?:^|\s)@(\S+)/g)) {
       const candidate = match[1].replace(/[).,;:!?'"\]]+$/, "")

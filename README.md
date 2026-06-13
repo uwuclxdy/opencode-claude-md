@@ -102,7 +102,7 @@ Two more details:
 
 - **No duplicates.** The plugin skips whatever opencode's native loader already picked up: its first-match `AGENTS.md` / `CLAUDE.md` / `CONTEXT.md`, plus the global pick. Nothing reaches the model twice. It still expands that file's `@path` imports, though, since opencode's loader never does.
 - **Comments stripped.** HTML comments are removed before injection.
-- **Imports ignore code.** `@path` references inside fenced blocks and inline code spans are left alone.
+- **Imports ignore code.** `@path` references inside fenced blocks, inline code spans, and indented code blocks (≥ 4 columns) are left alone.
 
 </details>
 
@@ -131,7 +131,7 @@ opencode already autoloads `~/.claude/CLAUDE.md` when `~/.config/opencode/AGENTS
 
 ### Do `@path` imports in CLAUDE.md work in opencode?
 
-Not natively. With this plugin they do: relative, absolute, and `~/` paths, up to 4 hops deep, same as Claude Code documents. Two conservative choices on top: imports inside code fences and inline spans are ignored, and targets outside the worktree (or the importing file's directory) are refused.
+Not natively. With this plugin they do: relative, absolute, and `~/` paths, up to 4 hops deep, same as Claude Code documents. Two conservative choices on top: imports inside code fences, inline spans, and indented code blocks are ignored, and targets outside the worktree (or the importing file's directory) are refused.
 
 ### Can instructions end up in the context twice?
 
