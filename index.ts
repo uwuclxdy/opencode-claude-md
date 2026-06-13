@@ -119,7 +119,12 @@ function resolveImport(target: string, importingFile: string): string {
   return resolve(dirname(importingFile), expanded)
 }
 
-/** Read a file, emit its block, then recurse into its @imports. */
+/**
+ * Read a file, emit its block, then recurse into its @imports. Files in `skip`
+ * are parsed for their @imports but their own block is not emitted — opencode
+ * already injected those bodies natively, yet its loader never expands @path,
+ * so we still have to pull the imports in ourselves.
+ */
 function collectFile(
   path: string,
   label: string,
@@ -127,6 +132,7 @@ function collectFile(
   seen: Set<string>,
   blocks: Block[],
   worktreeReal: string,
+  skip?: Set<string>,
 ): void {
   if (seen.has(path)) return
   seen.add(path)
@@ -134,7 +140,7 @@ function collectFile(
   if (raw === undefined) return
   const content = stripHtmlComments(raw).trim()
   if (!content) return
-  blocks.push({ path, label, content: sanitizeReminderTags(content) })
+  if (!skip?.has(path)) blocks.push({ path, label, content: sanitizeReminderTags(content) })
   if (depth >= MAX_IMPORT_DEPTH) return
   const importerDir = safeReal(dirname(path))
   for (const target of findImports(content)) {
@@ -147,7 +153,7 @@ function collectFile(
     const real = safeReal(resolved)
     if (!real) continue
     if (!isWithin(real, worktreeReal) && !(importerDir && isWithin(real, importerDir))) continue
-    collectFile(resolved, `imported by ${path}`, depth + 1, seen, blocks, worktreeReal)
+    collectFile(resolved, `imported by ${path}`, depth + 1, seen, blocks, worktreeReal, skip)
   }
 }
 
@@ -229,7 +235,7 @@ function collectDir(
     [join(dir, "CLAUDE.local.md"), LABELS.local],
   ]
   for (const [path, label] of candidates) {
-    if (!skip?.has(path) && isFile(path)) collectFile(path, label, 0, seen, blocks, worktreeReal)
+    if (isFile(path)) collectFile(path, label, 0, seen, blocks, worktreeReal, skip)
   }
 }
 
@@ -243,7 +249,7 @@ function assemble(
   const blocks: Block[] = []
 
   const collect = (path: string, label: string) => {
-    if (!skip.has(path) && isFile(path)) collectFile(path, label, 0, seen, blocks, worktreeReal)
+    if (isFile(path)) collectFile(path, label, 0, seen, blocks, worktreeReal, skip)
   }
 
   collect(managedPolicyPath(), LABELS.managed)

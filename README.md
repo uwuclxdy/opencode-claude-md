@@ -100,7 +100,7 @@ A plugin can't show approval dialogs, so two guards stand in:
 
 Two more details:
 
-- **No duplicates.** The plugin skips whatever opencode's native loader already picked up: its first-match `AGENTS.md` / `CLAUDE.md` / `CONTEXT.md`, plus the global pick. Nothing reaches the model twice.
+- **No duplicates.** The plugin skips whatever opencode's native loader already picked up: its first-match `AGENTS.md` / `CLAUDE.md` / `CONTEXT.md`, plus the global pick. Nothing reaches the model twice. It still expands that file's `@path` imports, though, since opencode's loader never does.
 - **Comments stripped.** HTML comments are removed before injection.
 - **Imports ignore code.** `@path` references inside fenced blocks and inline code spans are left alone.
 
@@ -127,7 +127,7 @@ Out of the box, opencode reads a project `CLAUDE.md` only when no `AGENTS.md` ex
 
 ### Why isn't my `~/.claude/CLAUDE.md` injected by the plugin?
 
-opencode already autoloads `~/.claude/CLAUDE.md` when `~/.config/opencode/AGENTS.md` doesn't exist. In that common setup the global file reaches the model through opencode, and the plugin skips it to avoid a duplicate. The plugin injects it itself only when `~/.config/opencode/AGENTS.md` exists and wins the native pick.
+opencode already autoloads `~/.claude/CLAUDE.md` when `~/.config/opencode/AGENTS.md` doesn't exist. In that common setup the global file reaches the model through opencode, and the plugin skips its body to avoid a duplicate (it still expands the file's `@path` imports, which opencode ignores). The plugin injects the file itself only when `~/.config/opencode/AGENTS.md` exists and wins the native pick.
 
 ### Do `@path` imports in CLAUDE.md work in opencode?
 
