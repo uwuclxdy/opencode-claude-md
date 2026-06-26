@@ -2,10 +2,10 @@
 
 <img src="https://raw.githubusercontent.com/uwuclxdy/opencode-claude-md/mommy/media/image.png" alt="opencode answering 'what CLAUDE.md can you see?' with the full stacked CLAUDE.md hierarchy" width="300" align="right">
 
-[![npm](https://img.shields.io/npm/v/opencode-claude-md?color=cb3837&logo=npm)](https://www.npmjs.com/package/opencode-claude-md)
-[![npm downloads](https://img.shields.io/npm/dm/opencode-claude-md?color=blue)](https://www.npmjs.com/package/opencode-claude-md)
-[![license: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
-[![opencode plugin](https://img.shields.io/badge/opencode-plugin-f8b76b)](https://opencode.ai/docs/plugins/)
+[![npm](https://shields.uwuclxdy.dev/npm/v/opencode-claude-md?color=cb3837&logo=npm)](https://www.npmjs.com/package/opencode-claude-md)
+[![npm downloads](https://shields.uwuclxdy.dev/npm/dm/opencode-claude-md?color=blue)](https://www.npmjs.com/package/opencode-claude-md)
+[![license: MIT](https://shields.uwuclxdy.dev/badge/license-MIT-green)](LICENSE)
+[![opencode plugin](https://shields.uwuclxdy.dev/badge/opencode-plugin-f8b76b)](https://opencode.ai/docs/plugins/)
 
 > **If Claude Code would read your `CLAUDE.md`, opencode reads it too.**
 
