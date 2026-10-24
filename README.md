@@ -33,7 +33,7 @@ opencode v2 walks up from your working directory and loads every `AGENTS.md` it 
 |---|:---:|:---:|
 | Every `AGENTS.md` project root → cwd (or home → cwd), and one global | ✅ | ✅ *(left to opencode)* |
 | Every `CLAUDE.md` from root → cwd | ❌ | ✅ |
-| `.claude/CLAUDE.md` at each level | ❌ | ✅ |
+| `CLAUDE.md` inside `.claude` at each level | ❌ | ✅ |
 | `CLAUDE.local.md` at each level | ❌ | ✅ |
 | `~/.claude/CLAUDE.md` (user global) | ❌ | ✅ |
 | `@path/to/file` imports (≤ 4 hops) | ❌ | ✅ |
@@ -103,6 +103,7 @@ A plugin can't show approval dialogs, so two guards stand in:
 Two more details:
 
 - **No duplicates.** The plugin skips whatever opencode's native loader already picked up: every `AGENTS.md` between your working directory and the project root (or your home directory), plus the global config `AGENTS.md`. Nothing reaches the model twice. It still expands those files' `@path` imports, though, since opencode's loader never does.
+- **AGENTS.md coexistence.** Claude Code reads `AGENTS.md` only when no `CLAUDE.md`, `CLAUDE.md` inside `.claude`, or `CLAUDE.local.md` exists in your working directory or above it. opencode loads `AGENTS.md` natively in every repo, so a repo holding both gets both here. That divergence is structural: a plugin can only add content, and withholding the `CLAUDE.md` family to force the choice would leave such repos with `AGENTS.md` only, the opposite of Claude Code's outcome.
 - **Comments stripped.** HTML comments are removed before injection.
 - **Imports ignore code.** `@path` references inside fenced blocks, inline code spans, and indented code blocks (≥ 4 columns) are left alone.
 
@@ -126,6 +127,10 @@ Out of the box, opencode v2 reads `AGENTS.md` only — every one up the tree, bu
 ### Does opencode read AGENTS.md or CLAUDE.md first?
 
 opencode v2 reads `AGENTS.md` — every one up the tree, plus the global one. `CLAUDE.md` is invisible to it. The plugin leaves opencode's `AGENTS.md` pick alone and stacks every `CLAUDE.md` around it.
+
+### What about auto memory (`MEMORY.md`)?
+
+That layer is another plugin's: this plugin never reads `MEMORY.md`. [opencode-claude-memory](https://github.com/kuitos/opencode-claude-memory) shares Claude Code's auto-memory directory with opencode, and running both is fine.
 
 ### Does the plugin inject `~/.claude/CLAUDE.md`?
 
