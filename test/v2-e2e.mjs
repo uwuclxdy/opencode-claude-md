@@ -167,9 +167,16 @@ const port = capture.address().port
 opencodeJson.providers.capture.settings = { baseURL: `http://127.0.0.1:${port}/v1` }
 writeFileSync(join(project, "opencode.json"), JSON.stringify(opencodeJson, null, 2))
 
+// v2's session runner resolves a workspace from the VCS root; without a git
+// repo the location lands elsewhere and the fixture config never loads
+const ginit = spawnSync("git", ["init", "-q"], { cwd: project, encoding: "utf8" })
+if (ginit.error || ginit.status !== 0) fail(`git init in the fixture failed: ${ginit.error ?? ginit.stderr}`)
+
 const runEnv = {
   ...process.env,
   HOME: home,
+  // v2 resolves the session location from $PWD, which spawn's cwd does not update
+  PWD: project,
   BUN_INSTALL: process.env.BUN_INSTALL ?? join(homedir(), ".bun"),
   XDG_CONFIG_HOME: join(xdg, "config"),
   XDG_DATA_HOME: join(xdg, "data"),
@@ -214,11 +221,6 @@ if (childPid && existsSync(`/proc/${childPid}`)) {
   stray = existsSync(`/proc/${childPid}`)
 }
 if (stray) fail(`opencode process ${childPid} outlived the run — cleanup asserted, not assumed`)
-
-// v2's session runner resolves a workspace from the VCS root; without a git
-// repo the inbox runner stalls silently before prompt admission
-const ginit = spawnSync("git", ["init", "-q"], { cwd: project, encoding: "utf8" })
-if (ginit.error || ginit.status !== 0) fail(`git init in the fixture failed: ${ginit.error ?? ginit.stderr}`)
 
 let passed = false
 const cleanupFixture = () => {
