@@ -12,7 +12,8 @@
  *     a tool first touches a file in that subtree
  *   - @path imports, max 4 hops, ignored inside code fences/spans and
  *     indented code blocks, confined to the worktree or the importing file's dir
- *   - HTML comments stripped, <system-reminder> tags in content escaped
+ *   - HTML comments stripped outside code blocks, <system-reminder> tags in
+ *     content escaped
  *
  * Skips whatever opencode's native instruction loader already injects
  * (<config>/AGENTS.md globally, plus every AGENTS.md between the session
@@ -76,8 +77,172 @@ function readText(p: string): string | undefined {
   }
 }
 
+/**
+ * The one shared reading of what is code in instruction text — fenced and
+ * indented blocks — so comment stripping and import scanning can never
+ * disagree about a line.
+ */
+function lineKinds(text: string): { line: string; isCode: boolean }[] {
+  const kinds: { line: string; isCode: boolean }[] = []
+  // a fence closes only on the same delimiter char, at least as long, bare line
+  let fence: { char: string; len: number } | null = null
+  for (const line of text.split("\n")) {
+    const delim = line.match(/^\s*(`{3,}|~{3,})/)
+    if (fence) {
+      if (
+        delim &&
+        delim[1][0] === fence.char &&
+        delim[1].length >= fence.len &&
+        /^\s*(?:`{3,}|~{3,})\s*$/.test(line)
+      ) {
+        fence = null
+      }
+      kinds.push({ line, isCode: true })
+      continue
+    }
+    if (delim) {
+      fence = { char: delim[1][0], len: delim[1].length }
+      kinds.push({ line, isCode: true })
+      continue
+    }
+    // a line indented >= 4 columns (tab = one stop) is a markdown indented
+    // code block
+    kinds.push({ line, isCode: /^(?:\t| {4})/.test(line) })
+  }
+  return kinds
+}
+
+/**
+ * Pair each comment opener with the first `-->` after it on one prose line,
+ * the one-span pairing of the regex this code replaces. `text` is what
+ * survives outside the comment spans, `spans` the character ranges the
+ * comments cover on this line, and `openAt` where the final opener — the one
+ * still unmatched at line end — sits, so an unterminated comment restores
+ * from exactly there.
+ */
+function stripProseLine(
+  line: string,
+  inComment: boolean,
+): { text: string; spans: Array<[number, number]>; inComment: boolean; openAt: number } {
+  let rest = line
+  let base = 0
+  let out = ""
+  let openAt = -1
+  const spans: Array<[number, number]> = []
+  // an extent carried in from an earlier line covers this line from column 0
+  let spanStart = inComment ? 0 : -1
+  while (rest !== "") {
+    if (inComment) {
+      const close = rest.indexOf("-->")
+      if (close === -1) break
+      base += close + 3
+      rest = rest.slice(close + 3)
+      inComment = false
+      openAt = -1
+      spans.push([spanStart, base])
+      spanStart = -1
+      continue
+    }
+    const open = rest.indexOf("<!--")
+    if (open === -1) {
+      out += rest
+      break
+    }
+    out += rest.slice(0, open)
+    base += open + 4
+    rest = rest.slice(open + 4)
+    openAt = base - 4
+    spanStart = openAt
+    inComment = true
+  }
+  if (spanStart !== -1) spans.push([spanStart, line.length])
+  return { text: out, spans, inComment, openAt }
+}
+
+/**
+ * Strip HTML comments from prose only: code content never opens one, so
+ * comment text inside fenced and indented blocks survives verbatim. A
+ * comment opened on a prose line keeps the one-span semantics of the strip
+ * it replaces — it runs to the first `-->` on any line — and strips whole
+ * or not at all, so one left unterminated to EOF stays.
+ */
 function stripHtmlComments(text: string): string {
-  return text.replace(/<!--[\s\S]*?-->/g, "")
+  const kept: string[] = []
+  let inComment = false
+  // a comment opened but not yet closed: `head` is the text emitted before
+  // its final opener, `suffix` the original text from that opener, `tail`
+  // the whole original lines after it — together what restores verbatim if
+  // the comment never closes
+  let held: { head: string; suffix: string; tail: string[] } | null = null
+  for (const { line, isCode } of lineKinds(text)) {
+    // an open comment's extent is raw text: code lines carry it too, and
+    // what follows its closer on such a line scans as prose
+    if (isCode && !inComment) {
+      kept.push(line)
+      continue
+    }
+    const stripped = stripProseLine(line, inComment)
+    inComment = stripped.inComment
+    if (!inComment) {
+      // a closed comment is one span: the lines it crossed collapse into
+      // its head joined to its tail
+      kept.push(held ? held.head + stripped.text : stripped.text)
+      held = null
+    } else if (stripped.openAt !== -1) {
+      // the still-unmatched opener sits on this line: closed comments
+      // before it emit now, and only from the opener on can restore
+      held = { head: (held ? held.head : "") + stripped.text, suffix: line.slice(stripped.openAt), tail: [] }
+    } else if (held) {
+      held.tail.push(line)
+    }
+  }
+  if (held) kept.push(held.head + held.suffix, ...held.tail)
+  return kept.join("\n")
+}
+
+/**
+ * Neutralize `@` inside the comment extents the strip would remove, so the
+ * import scanner can run on the raw text and read the fences the file
+ * actually has: a fence a stripped span happens to swallow must never
+ * un-shield what it shields here, and a commented-out import must never
+ * fire. Extents left unterminated to EOF are not masked — they survive the
+ * strip whole, exactly as today.
+ */
+function maskCommentedImports(text: string): string {
+  const lines: string[] = []
+  let inComment = false
+  // masked and original copies of the lines of a comment not yet closed:
+  // closed -> the masked lines count, unterminated at EOF -> the originals
+  let held: { masked: string[]; original: string[] } | null = null
+  for (const { line, isCode } of lineKinds(text)) {
+    if (isCode && !inComment) {
+      lines.push(line)
+      continue
+    }
+    const stripped = stripProseLine(line, inComment)
+    inComment = stripped.inComment
+    let masked = ""
+    let prev = 0
+    for (const [start, end] of stripped.spans) {
+      masked += line.slice(prev, start) + line.slice(start, end).replace(/@/g, "\0")
+      prev = end
+    }
+    masked += line.slice(prev)
+    if (held) {
+      held.masked.push(masked)
+      held.original.push(line)
+      if (!inComment) {
+        lines.push(...held.masked)
+        held = null
+      }
+    } else if (inComment) {
+      held = { masked: [masked], original: [line] }
+    } else {
+      lines.push(masked)
+    }
+  }
+  if (held) lines.push(...held.original)
+  return lines.join("\n")
 }
 
 /** Instruction files must not be able to forge or close the wrapper tag. */
@@ -136,28 +301,8 @@ function importTokenAt(line: string, start: number): { path: string | undefined;
 /** Find @path import targets, skipping fenced code blocks and inline code spans. */
 function findImports(text: string): string[] {
   const out: string[] = []
-  // a fence closes only on the same delimiter char, at least as long, bare line
-  let fence: { char: string; len: number } | null = null
-  for (const line of text.split("\n")) {
-    const delim = line.match(/^\s*(`{3,}|~{3,})/)
-    if (fence) {
-      if (
-        delim &&
-        delim[1][0] === fence.char &&
-        delim[1].length >= fence.len &&
-        /^\s*(?:`{3,}|~{3,})\s*$/.test(line)
-      ) {
-        fence = null
-      }
-      continue
-    }
-    if (delim) {
-      fence = { char: delim[1][0], len: delim[1].length }
-      continue
-    }
-    // a line indented >= 4 columns (tab = one stop) is a markdown indented
-    // code block, so it can't introduce an @import
-    if (/^(?:\t| {4})/.test(line)) continue
+  for (const { line, isCode } of lineKinds(text)) {
+    if (isCode) continue
     const scannable = line.replace(/`[^`]*`/g, "")
     for (let i = 0; i < scannable.length; i++) {
       if (scannable[i] !== "@") continue
@@ -200,7 +345,7 @@ function collectFile(
   if (!skip?.has(path)) blocks.push({ path, label, content: sanitizeReminderTags(content) })
   if (depth >= MAX_IMPORT_DEPTH) return
   const importerDir = safeReal(dirname(path))
-  for (const target of findImports(content)) {
+  for (const target of findImports(maskCommentedImports(raw))) {
     const resolved = resolveImport(target, path)
     if (!isFile(resolved)) continue
     // confine imports: an instruction file may only pull in files under the

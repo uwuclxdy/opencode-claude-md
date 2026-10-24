@@ -23,6 +23,9 @@
  *   4. every request's system channel carries the ESCAPED marker (a
  *      backslash-escaped-space import resolves to one path) and never the
  *      QUOTED marker (a quoted import path is never imported)
+ *   5. the system channel carries the COMMENT-IN marker (HTML comments
+ *      survive inside fenced code blocks) and never the COMMENT-OUT marker
+ *      (comments outside code are stripped)
  *
  * Isolation: every user-writable root is redirected into the fixture
  * (HOME, XDG_CONFIG_HOME, XDG_DATA_HOME, XDG_STATE_HOME, XDG_CACHE_HOME);
@@ -55,6 +58,8 @@ const REPO = resolve(dirname(fileURLToPath(import.meta.url)), "..")
 const BIN = process.env.OPENCODE_BIN
 const PLUGIN_ENTRY = process.env.OPENCODE_PLUGIN_ENTRY ?? `file://${REPO}`
 const ANCESTOR = "OCM-E2E-ANCESTOR-MARKER"
+const COMMENT_IN = "OCM-E2E-COMMENT-IN-MARKER"
+const COMMENT_OUT = "OCM-E2E-COMMENT-OUT-MARKER"
 const ESCAPED = "OCM-E2E-ESCAPED-IMPORT-MARKER"
 const QUOTED = "OCM-E2E-QUOTED-IMPORT-MARKER"
 const SUB = "OCM-E2E-SUBDIR-MARKER"
@@ -148,7 +153,7 @@ for (const d of [
 // parent dir above the project: only our plugin walks the ancestor chain;
 // the import lines pin the scanner: a quoted path is never imported, a
 // backslash-escaped space joins into one path
-writeFileSync(join(fixture, "fixture-root", "CLAUDE.md"), `parent-level instructions\n${ANCESTOR}\n@Design\\ Docs/x.md\n@"quoted-target.md"\n`)
+writeFileSync(join(fixture, "fixture-root", "CLAUDE.md"), `parent-level instructions\n${ANCESTOR}\n@Design\\ Docs/x.md\n@"quoted-target.md"\n<!-- stripped outside code: ${COMMENT_OUT} -->\n\n\`\`\`\n<!-- preserved inside a fence: ${COMMENT_IN} -->\n\`\`\`\n`)
 writeFileSync(join(fixture, "fixture-root", "Design Docs", "x.md"), `design docs payload\n${ESCAPED}\n`)
 writeFileSync(join(fixture, "fixture-root", "quoted-target.md"), `quoted target payload\n${QUOTED}\n`)
 writeFileSync(join(project, "CLAUDE.md"), "# project instructions\nroot file (may also be picked up natively)\n")
@@ -287,6 +292,12 @@ if (!sysChannel(requests[0].body).includes(ESCAPED)) {
 }
 if (sysChannel(requests[0].body).includes(QUOTED)) {
   fail(`request 1 carries the quoted-import marker in a system channel — a quoted import path must never be imported`)
+}
+if (!sysChannel(requests[0].body).includes(COMMENT_IN)) {
+  fail(`request 1 carries no in-fence comment marker in a system channel — HTML comments inside code blocks must survive injection`)
+}
+if (sysChannel(requests[0].body).includes(COMMENT_OUT)) {
+  fail(`request 1 carries the outside-code comment marker in a system channel — HTML comments outside code must be stripped`)
 }
 
 if (!toolChannel(requests[2].body).includes(SUB3)) {
