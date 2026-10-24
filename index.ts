@@ -98,6 +98,41 @@ function isWithin(child: string, parent: string): boolean {
   return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel))
 }
 
+/**
+ * Parse the import token just after an anchored '@', per Claude Code's token
+ * forms: a quote-wrapped path is never an import, and '\' followed by a space
+ * joins the token into one path. A lone trailing backslash is an unterminated
+ * escape, so its token imports nothing. `end` is where scanning resumes:
+ * past a whole quoted span, or past just an unterminated quote so later
+ * tokens on the same line still scan.
+ */
+function importTokenAt(line: string, start: number): { path: string | undefined; end: number } {
+  const first = line[start]
+  if (first === '"' || first === "'") {
+    const close = line.indexOf(first, start + 1)
+    return { path: undefined, end: close === -1 ? start + 1 : close + 1 }
+  }
+  let token = ""
+  let end = start
+  while (end < line.length) {
+    const ch = line[end]
+    if (/\s/.test(ch)) break
+    if (ch === "\\") {
+      // only '\ ' is an escape; a backslash before any other char is literal
+      if (end + 1 < line.length && line[end + 1] === " ") {
+        token += " "
+        end += 2
+        continue
+      }
+      if (end + 1 === line.length) return { path: undefined, end: line.length }
+    }
+    token += ch
+    end++
+  }
+  const path = token.replace(/[).,;:!?'"\]]+$/, "")
+  return { path: path || undefined, end }
+}
+
 /** Find @path import targets, skipping fenced code blocks and inline code spans. */
 function findImports(text: string): string[] {
   const out: string[] = []
@@ -124,9 +159,12 @@ function findImports(text: string): string[] {
     // code block, so it can't introduce an @import
     if (/^(?:\t| {4})/.test(line)) continue
     const scannable = line.replace(/`[^`]*`/g, "")
-    for (const match of scannable.matchAll(/(?:^|\s)@(\S+)/g)) {
-      const candidate = match[1].replace(/[).,;:!?'"\]]+$/, "")
-      if (candidate) out.push(candidate)
+    for (let i = 0; i < scannable.length; i++) {
+      if (scannable[i] !== "@") continue
+      if (i > 0 && !/\s/.test(scannable[i - 1])) continue
+      const token = importTokenAt(scannable, i + 1)
+      if (token.path !== undefined) out.push(token.path)
+      i = token.end
     }
   }
   return out

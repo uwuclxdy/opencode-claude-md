@@ -20,6 +20,9 @@
  *   3. requests 2 and 3 carry the ANCESTOR marker only in the system
  *      channel, never in a tool result — injection and subtree attach stay
  *      separate
+ *   4. every request's system channel carries the ESCAPED marker (a
+ *      backslash-escaped-space import resolves to one path) and never the
+ *      QUOTED marker (a quoted import path is never imported)
  *
  * Isolation: every user-writable root is redirected into the fixture
  * (HOME, XDG_CONFIG_HOME, XDG_DATA_HOME, XDG_STATE_HOME, XDG_CACHE_HOME);
@@ -52,6 +55,8 @@ const REPO = resolve(dirname(fileURLToPath(import.meta.url)), "..")
 const BIN = process.env.OPENCODE_BIN
 const PLUGIN_ENTRY = process.env.OPENCODE_PLUGIN_ENTRY ?? `file://${REPO}`
 const ANCESTOR = "OCM-E2E-ANCESTOR-MARKER"
+const ESCAPED = "OCM-E2E-ESCAPED-IMPORT-MARKER"
+const QUOTED = "OCM-E2E-QUOTED-IMPORT-MARKER"
 const SUB = "OCM-E2E-SUBDIR-MARKER"
 const SUB2 = "OCM-E2E-SUBDIR2-MARKER"
 const SUB3 = "OCM-E2E-SUBDIR3-MARKER"
@@ -136,11 +141,16 @@ for (const d of [
   join(project, "sub"),
   join(project, "sub2"),
   join(project, "sub3"),
+  join(fixture, "fixture-root", "Design Docs"),
 ]) {
   mkdirSync(d, { recursive: true })
 }
-// parent dir above the project: only our plugin walks the ancestor chain
-writeFileSync(join(fixture, "fixture-root", "CLAUDE.md"), `parent-level instructions\n${ANCESTOR}\n`)
+// parent dir above the project: only our plugin walks the ancestor chain;
+// the import lines pin the scanner: a quoted path is never imported, a
+// backslash-escaped space joins into one path
+writeFileSync(join(fixture, "fixture-root", "CLAUDE.md"), `parent-level instructions\n${ANCESTOR}\n@Design\\ Docs/x.md\n@"quoted-target.md"\n`)
+writeFileSync(join(fixture, "fixture-root", "Design Docs", "x.md"), `design docs payload\n${ESCAPED}\n`)
+writeFileSync(join(fixture, "fixture-root", "quoted-target.md"), `quoted target payload\n${QUOTED}\n`)
 writeFileSync(join(project, "CLAUDE.md"), "# project instructions\nroot file (may also be picked up natively)\n")
 writeFileSync(join(project, "sub", "CLAUDE.md"), `subdir instructions\n${SUB}\n`)
 writeFileSync(join(project, "sub", "file.txt"), "subdir payload\n")
@@ -272,6 +282,13 @@ for (const [i, req] of requests.entries()) {
 if (!toolChannel(requests[1].body).includes(SUB)) {
   fail(`request 2 carries no read-subdir marker inside a tool-role message — the read attach did not land.\ntool roles present: ${(requests[1].body.messages ?? []).map((m) => m.role).join(",")}`)
 }
+if (!sysChannel(requests[0].body).includes(ESCAPED)) {
+  fail(`request 1 carries no escaped-import marker in a system channel — a backslash-escaped space did not join into one path`)
+}
+if (sysChannel(requests[0].body).includes(QUOTED)) {
+  fail(`request 1 carries the quoted-import marker in a system channel — a quoted import path must never be imported`)
+}
+
 if (!toolChannel(requests[2].body).includes(SUB3)) {
   fail(`request 3 carries no shell-subdir marker inside a tool-role message — the shell-read attach did not land.\ntool roles present: ${(requests[2].body.messages ?? []).map((m) => m.role).join(",")}`)
 }
