@@ -336,6 +336,105 @@ function targetPathOf(input: unknown): unknown {
   return undefined
 }
 
+// their separated value word is not a file operand; grep/sed -e/-f stay out
+// (their value fills the pattern/script operand slot)
+const VALUE_FLAGS: Readonly<Record<string, readonly string[]>> = {
+  head: ["-n", "-c"],
+  tail: ["-n", "-c"],
+  grep: ["-A", "-B", "-C", "-m"],
+}
+
+/**
+ * v2's shell tool (claude code's bash) takes a whole command line, so it
+ * counts as a file touch only in the plain forms claude code counts as a
+ * read: one of cat/head/tail/sed -n/grep over exactly one existing file,
+ * with no shell operator outside quotes. Every other shape returns no target.
+ */
+function shellReadTargetOf(input: unknown, cwd: string): string | undefined {
+  if (typeof input !== "object" || input === null) return undefined
+  const command = (input as { command?: unknown }).command
+  if (typeof command !== "string") return undefined
+  const words: string[] = []
+  let word = ""
+  let started = false
+  const endWord = () => {
+    if (started) words.push(word)
+    word = ""
+    started = false
+  }
+  for (let i = 0; i < command.length; i++) {
+    const ch = command[i]
+    // a pipe, chain, redirect, subshell or substitution makes the line more
+    // than a bare read command
+    if (/[|&;<>()`\n]/.test(ch)) return undefined
+    if (ch === "\\") {
+      if (i + 1 >= command.length) return undefined
+      word += command[++i]
+      started = true
+      continue
+    }
+    if (ch === "'" || ch === '"') {
+      const quote = ch
+      i++
+      while (i < command.length && command[i] !== quote) {
+        const quoted = command[i]
+        // inside double quotes a backslash only escapes " \ $ `
+        if (quote === '"' && quoted === "\\" && i + 1 < command.length && '"\\$`'.includes(command[i + 1])) {
+          word += command[i + 1]
+          i += 2
+          continue
+        }
+        word += quoted
+        i++
+      }
+      if (i >= command.length) return undefined
+      started = true
+      continue
+    }
+    if (ch === " " || ch === "\t" || ch === "\r") {
+      endWord()
+      continue
+    }
+    word += ch
+    started = true
+  }
+  endWord()
+
+  const [name, ...args] = words
+  const valueFlags = VALUE_FLAGS[name] ?? []
+  const operands: string[] = []
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]
+    if (valueFlags.includes(arg) && i + 1 < args.length) {
+      i++
+      continue
+    }
+    if (!arg.startsWith("-")) operands.push(arg)
+  }
+  let file: string | undefined
+  switch (name) {
+    case "cat":
+    case "head":
+    case "tail":
+      if (operands.length === 1) file = operands[0]
+      break
+    case "sed":
+      // claude code counts only sed's print-selected (-n) form as a read; an
+      // -i anywhere means an in-place write
+      if (operands.length === 2 && args.some((arg) => arg.startsWith("-") && arg.includes("n") && !arg.includes("i"))) {
+        file = operands[1]
+      }
+      break
+    case "grep":
+      // operands are pattern then file; a third operand is a second file
+      if (operands.length === 2) file = operands[1]
+      break
+  }
+  if (file === undefined) return undefined
+  const resolved = resolve(cwd, expandHome(file))
+  return isFile(resolved) ? resolved : undefined
+}
+
 interface SessionState {
   directory: string
   worktreeReal: string
@@ -423,10 +522,13 @@ export default Plugin.define({
       await ctx.tool.hook("execute.after", async (event) => {
         try {
           if (event.status !== "completed") return
-          if (!FILE_TOOLS.includes(event.tool)) return
+          const isShell = event.tool === "shell"
+          if (!isShell && !FILE_TOOLS.includes(event.tool)) return
           const state = sessions.get(event.sessionID)
           if (!state) return
-          const target = targetPathOf(event.input)
+          const target = isShell
+            ? shellReadTargetOf(event.input, state.directory)
+            : targetPathOf(event.input)
           if (typeof target !== "string") return
           const fileDir = dirname(resolve(state.directory, target))
           const rel = relative(state.directory, fileDir)

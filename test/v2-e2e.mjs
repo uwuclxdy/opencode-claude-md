@@ -3,8 +3,9 @@
  *
  * Boots a local capture provider (openai-compatible, SSE), a fixture project
  * whose instruction layout can only be delivered by this plugin, and drives
- * `opencode run` through a scripted three-turn exchange (read a file in
- * sub/, edit a file in sub2/, then answer). Assertions run over the captured
+ * `opencode run` through a scripted four-turn exchange (read a file in
+ * sub/, cat a file in sub3/ via the shell tool, edit a file in sub2/, then
+ * answer). Assertions run over the captured
  * model requests:
  *
  *   1. every request carries the ANCESTOR marker exactly once in a system
@@ -13,8 +14,9 @@
  *      every primary model call, and the session's directory (not the
  *      plugin's load location) was used
  *   2. request 2 carries the SUB marker inside the read tool result;
- *      request 3 carries the SUB2 marker inside the edit tool result —
- *      lazy subtree attach works for every file-naming tool
+ *      request 3 carries the SUB3 marker inside the shell tool result of a
+ *      single-file `cat`; request 4 carries the SUB2 marker inside the edit
+ *      tool result — lazy subtree attach works for every file-touching tool
  *   3. requests 2 and 3 carry the ANCESTOR marker only in the system
  *      channel, never in a tool result — injection and subtree attach stay
  *      separate
@@ -52,6 +54,7 @@ const PLUGIN_ENTRY = process.env.OPENCODE_PLUGIN_ENTRY ?? `file://${REPO}`
 const ANCESTOR = "OCM-E2E-ANCESTOR-MARKER"
 const SUB = "OCM-E2E-SUBDIR-MARKER"
 const SUB2 = "OCM-E2E-SUBDIR2-MARKER"
+const SUB3 = "OCM-E2E-SUBDIR3-MARKER"
 
 const fail = (msg) => {
   console.error(`FAIL: ${msg}`)
@@ -106,8 +109,10 @@ const capture = createServer((req, res) => {
         requests.length === 1
           ? toolCallChunks("read", { path: "sub/file.txt" })
           : requests.length === 2
-            ? toolCallChunks("edit", { path: "sub2/other.txt", oldString: "second subdir payload", newString: "second subdir payload (edited)" })
-            : textChunks,
+            ? toolCallChunks("shell", { command: "cat sub3/notes.txt" })
+            : requests.length === 3
+              ? toolCallChunks("edit", { path: "sub2/other.txt", oldString: "second subdir payload", newString: "second subdir payload (edited)" })
+              : textChunks,
       )
     })
     return
@@ -130,6 +135,7 @@ for (const d of [
   project,
   join(project, "sub"),
   join(project, "sub2"),
+  join(project, "sub3"),
 ]) {
   mkdirSync(d, { recursive: true })
 }
@@ -140,6 +146,8 @@ writeFileSync(join(project, "sub", "CLAUDE.md"), `subdir instructions\n${SUB}\n`
 writeFileSync(join(project, "sub", "file.txt"), "subdir payload\n")
 writeFileSync(join(project, "sub2", "CLAUDE.md"), `second subdir instructions\n${SUB2}\n`)
 writeFileSync(join(project, "sub2", "other.txt"), "second subdir payload\n")
+writeFileSync(join(project, "sub3", "CLAUDE.md"), `third subdir instructions\n${SUB3}\n`)
+writeFileSync(join(project, "sub3", "notes.txt"), "third subdir payload\n")
 
 const opencodeJson = {
   $schema: "https://opencode.ai/config.json",
@@ -235,9 +243,9 @@ if (process.env.E2E_DUMP) writeFileSync(join(fixture, "bodies.json"), JSON.strin
 
 // --- assertions ------------------------------------------------------------
 
-if (requests.length < 3) {
+if (requests.length < 4) {
   // the fixture survives failures: its state dir holds the app's own debug log
-  fail(`expected >=3 captured model requests, got ${requests.length}; app output tail:\n${log.slice(-3000)}`)
+  fail(`expected >=4 captured model requests, got ${requests.length}; app output tail:\n${log.slice(-3000)}`)
 }
 
 const sysChannel = (body) => {
@@ -264,12 +272,15 @@ for (const [i, req] of requests.entries()) {
 if (!toolChannel(requests[1].body).includes(SUB)) {
   fail(`request 2 carries no read-subdir marker inside a tool-role message — the read attach did not land.\ntool roles present: ${(requests[1].body.messages ?? []).map((m) => m.role).join(",")}`)
 }
-if (!toolChannel(requests[2].body).includes(SUB2)) {
-  fail(`request 3 carries no edit-subdir marker inside a tool-role message — the edit attach did not land.\ntool roles present: ${(requests[2].body.messages ?? []).map((m) => m.role).join(",")}`)
+if (!toolChannel(requests[2].body).includes(SUB3)) {
+  fail(`request 3 carries no shell-subdir marker inside a tool-role message — the shell-read attach did not land.\ntool roles present: ${(requests[2].body.messages ?? []).map((m) => m.role).join(",")}`)
 }
-for (const [i, body] of [requests[1].body, requests[2].body].entries()) {
+if (!toolChannel(requests[3].body).includes(SUB2)) {
+  fail(`request 4 carries no edit-subdir marker inside a tool-role message — the edit attach did not land.\ntool roles present: ${(requests[3].body.messages ?? []).map((m) => m.role).join(",")}`)
+}
+for (const [i, body] of [requests[1].body, requests[2].body, requests[3].body].entries()) {
   if (toolChannel(body).includes(ANCESTOR)) fail(`request ${i + 2} leaks the ancestor marker into a tool result — injection and subtree attach mixed`)
 }
 
 passed = true
-console.log("PASS: v2 e2e — per-call system injection, lazy subtree attach (read+edit)")
+console.log("PASS: v2 e2e — per-call system injection, lazy subtree attach (read+shell+edit)")
