@@ -20,8 +20,12 @@ Move a project between Claude Code and opencode and your instructions follow: no
 - 📚 **Full hierarchy** from filesystem root down to your working directory, ancestors first
 - 🌐 **User-global and managed-policy** files, on every OS
 - 🔒 **`CLAUDE.local.md`** picked up at every level
-- 🔗 **`@path` imports** expanded up to 4 hops deep
+- 🔗 **`@path` imports** expanded up to 4 hops deep — quoted paths never import, backslash-escaped spaces join into one path
 - 🪺 **Subdirectory `CLAUDE.md`** loaded lazily, as tools reach into each subtree
+- 🐚 **Shell single-file reads** (`cat`, `head`, `tail`, `sed -n`, `grep`) trigger the same lazy attach
+- 🚫 **`claudeMdExcludes`** honored from all four settings scopes (managed policy itself stays unexcludable)
+- 🔇 **`CLAUDE_CODE_DISABLE_CLAUDE_MDS=1`** turns the whole loader off
+- 🏛 **Managed `claudeMd` key** in `managed-settings.json`, loaded with managed precedence
 - ♻️ **Deduped** against opencode's own `AGENTS.md` pick, so nothing lands in context twice
 - 🪶 **One file, no build step** (`index.ts` ships as TypeScript)
 
@@ -88,7 +92,7 @@ list all CLAUDE.md / AGENTS.md that you can see right now (without using tools)
 
 Content rides in every primary model request's system parts as a hidden `<system-reminder>` block: the main agent sees it on every call, and nothing is written into the session transcript. Per-file labels match Claude Code's ("project instructions, checked into the codebase", and so on).
 
-Subdirectory files load later. When a tool reads, edits, or writes a file below your working directory, the plugin checks that path. Any new `CLAUDE.md` or `CLAUDE.local.md` it finds gets attached to the tool result, the way Claude Code delivers them.
+Subdirectory files load later. When a tool reads, edits, or writes a file below your working directory — or the shell tool reads a single file with `cat`, `head`, `tail`, `sed -n`, or `grep` — the plugin checks that path. Any new `CLAUDE.md` or `CLAUDE.local.md` it finds gets attached to the tool result, the way Claude Code delivers them.
 
 After a `/compact`, subdirectory files re-attach on the next touch. Startup files need no re-inject step — they ride every primary request.
 
@@ -104,8 +108,8 @@ Two more details:
 
 - **No duplicates.** The plugin skips whatever opencode's native loader already picked up: every `AGENTS.md` between your working directory and the project root (or your home directory), plus the global config `AGENTS.md`. Nothing reaches the model twice. It still expands those files' `@path` imports, though, since opencode's loader never does.
 - **AGENTS.md coexistence.** Claude Code reads `AGENTS.md` only when no `CLAUDE.md`, `CLAUDE.md` inside `.claude`, or `CLAUDE.local.md` exists in your working directory or above it. opencode loads `AGENTS.md` natively in every repo, so a repo holding both gets both here. That divergence is structural: a plugin can only add content, and withholding the `CLAUDE.md` family to force the choice would leave such repos with `AGENTS.md` only, the opposite of Claude Code's outcome.
-- **Comments stripped.** HTML comments are removed before injection.
-- **Imports ignore code.** `@path` references inside fenced blocks, inline code spans, and indented code blocks (≥ 4 columns) are left alone.
+- **Comments stripped outside code.** HTML comments are removed outside code; inside fenced and indented code blocks they survive.
+- **Imports ignore code.** `@path` references inside fenced blocks, inline code spans, and indented code blocks (≥ 4 columns) are left alone. A quote-wrapped path never imports; a backslash-escaped space joins into one path.
 
 </details>
 
