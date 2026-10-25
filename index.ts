@@ -14,6 +14,11 @@
  *     indented code blocks, confined to the worktree or the importing file's dir
  *   - HTML comments stripped outside code blocks, <system-reminder> tags in
  *     content escaped
+ *   - claudeMdExcludes, read from the settings scopes claude code reads with
+ *     the arrays merging, drops any injected file but the managed policy
+ *     source; the claudeMd key inside managed-settings.json loads with the
+ *     managed file's precedence
+ *   - CLAUDE_CODE_DISABLE_CLAUDE_MDS=1 injects nothing, managed policy included
  *
  * Skips whatever opencode's native instruction loader already injects
  * (<config>/AGENTS.md globally, plus every AGENTS.md between the session
@@ -25,6 +30,7 @@
  * `execute.after` hook (lazy subtree attach).
  */
 
+/// <reference types="bun-types" />
 import { Plugin } from "@opencode/plugin"
 import { readFileSync, realpathSync, statSync } from "node:fs"
 import { homedir } from "node:os"
@@ -250,6 +256,12 @@ function sanitizeReminderTags(text: string): string {
   return text.replace(/<(\/?)system-reminder/gi, "&lt;$1system-reminder")
 }
 
+/** Instruction text as the model sees it: prose comments stripped, reminder tags neutralized. */
+function preparedContent(raw: string): string | undefined {
+  const content = stripHtmlComments(raw).trim()
+  return content ? sanitizeReminderTags(content) : undefined
+}
+
 function safeReal(p: string): string | undefined {
   try {
     return realpathSync(p)
@@ -334,20 +346,22 @@ function collectFile(
   seen: Set<string>,
   blocks: Block[],
   worktreeReal: string,
+  excludes: readonly string[],
   skip?: Set<string>,
 ): void {
   if (seen.has(path)) return
   seen.add(path)
   const raw = readText(path)
   if (raw === undefined) return
-  const content = stripHtmlComments(raw).trim()
-  if (!content) return
-  if (!skip?.has(path)) blocks.push({ path, label, content: sanitizeReminderTags(content) })
+  const content = preparedContent(raw)
+  if (content === undefined) return
+  if (!skip?.has(path)) blocks.push({ path, label, content })
   if (depth >= MAX_IMPORT_DEPTH) return
   const importerDir = safeReal(dirname(path))
   for (const target of findImports(maskCommentedImports(raw))) {
     const resolved = resolveImport(target, path)
     if (!isFile(resolved)) continue
+    if (isExcluded(resolved, excludes)) continue
     // confine imports: an instruction file may only pull in files under the
     // worktree or under its own directory — never arbitrary local paths
     // (Claude Code gates external imports behind an approval dialog; a
@@ -355,19 +369,95 @@ function collectFile(
     const real = safeReal(resolved)
     if (!real) continue
     if (!isWithin(real, worktreeReal) && !(importerDir && isWithin(real, importerDir))) continue
-    collectFile(resolved, `imported by ${path}`, depth + 1, seen, blocks, worktreeReal, skip)
+    collectFile(resolved, `imported by ${path}`, depth + 1, seen, blocks, worktreeReal, excludes, skip)
+  }
+}
+
+function managedSettingsDir(): string {
+  switch (process.platform) {
+    case "darwin":
+      return "/Library/Application Support/ClaudeCode"
+    case "win32":
+      return "C:\\Program Files\\ClaudeCode"
+    default:
+      return "/etc/claude-code"
   }
 }
 
 function managedPolicyPath(): string {
-  switch (process.platform) {
-    case "darwin":
-      return "/Library/Application Support/ClaudeCode/CLAUDE.md"
-    case "win32":
-      return "C:\\Program Files\\ClaudeCode\\CLAUDE.md"
-    default:
-      return "/etc/claude-code/CLAUDE.md"
+  return join(managedSettingsDir(), "CLAUDE.md")
+}
+
+function managedSettingsPath(): string {
+  return join(managedSettingsDir(), "managed-settings.json")
+}
+
+/** CLAUDE_CODE_DISABLE_CLAUDE_MDS: exactly "1" turns every memory load off. */
+function claudeMdsDisabled(): boolean {
+  return process.env.CLAUDE_CODE_DISABLE_CLAUDE_MDS === "1"
+}
+
+/** A parsed settings file, or undefined when missing or malformed — claude code ignores such files. */
+function readSettings(file: string): Record<string, unknown> | undefined {
+  const raw = readText(file)
+  if (raw === undefined) return undefined
+  try {
+    const parsed: unknown = JSON.parse(raw)
+    return typeof parsed === "object" && parsed !== null ? (parsed as Record<string, unknown>) : undefined
+  } catch {
+    return undefined
   }
+}
+
+/**
+ * claudeMdExcludes from the settings scopes claude code reads; the arrays
+ * merge across layers. A non-string entry contributes nothing.
+ */
+function claudeMdExcludes(worktree: string): readonly string[] {
+  const files = [
+    join(homedir(), ".claude", "settings.json"),
+    join(worktree, ".claude", "settings.json"),
+    join(worktree, ".claude", "settings.local.json"),
+    managedSettingsPath(),
+  ]
+  const patterns: string[] = []
+  for (const file of files) {
+    const excludes = readSettings(file)?.claudeMdExcludes
+    if (!Array.isArray(excludes)) continue
+    for (const pattern of excludes) if (typeof pattern === "string") patterns.push(pattern)
+  }
+  return patterns
+}
+
+/**
+ * A claudeMdExcludes entry — glob pattern or absolute path — against a file's
+ * absolute path. A symlinked memory file is excludable by either its link
+ * path or its target, so both are matched. A malformed pattern matches nothing.
+ */
+function isExcluded(path: string, excludes: readonly string[]): boolean {
+  const paths = [path]
+  const real = safeReal(path)
+  if (real !== undefined && real !== path) paths.push(real)
+  return excludes.some((pattern) =>
+    paths.some((candidate) => {
+      try {
+        return new Bun.Glob(pattern).match(candidate)
+      } catch {
+        return false
+      }
+    }),
+  )
+}
+
+/**
+ * The claudeMd key of managed-settings.json: managed policy content inline,
+ * honored only there — claude code ignores the key in every other settings
+ * file — loading with the managed file's precedence.
+ */
+function managedClaudeMdContent(): string | undefined {
+  const claudeMd = readSettings(managedSettingsPath())?.claudeMd
+  if (typeof claudeMd !== "string") return undefined
+  return preparedContent(claudeMd)
 }
 
 /** Filesystem root down to (and including) dir. */
@@ -440,6 +530,7 @@ function collectDir(
   seen: Set<string>,
   blocks: Block[],
   worktreeReal: string,
+  excludes: readonly string[],
   skip?: Set<string>,
 ): void {
   const candidates: Array<[string, string]> = [
@@ -448,7 +539,9 @@ function collectDir(
     [join(dir, "CLAUDE.local.md"), LABELS.local],
   ]
   for (const [path, label] of candidates) {
-    if (isFile(path)) collectFile(path, label, 0, seen, blocks, worktreeReal, skip)
+    if (isFile(path) && !isExcluded(path, excludes)) {
+      collectFile(path, label, 0, seen, blocks, worktreeReal, excludes, skip)
+    }
   }
 }
 
@@ -458,16 +551,22 @@ function assemble(
   worktreeReal: string,
 ): { text: string; seen: Set<string> } {
   const skip = nativelyLoaded(directory, worktree)
+  const excludes = claudeMdExcludes(worktree)
   const seen = new Set<string>()
   const blocks: Block[] = []
 
-  const collect = (path: string, label: string) => {
-    if (isFile(path)) collectFile(path, label, 0, seen, blocks, worktreeReal, skip)
+  // the managed policy source is the one thing claudeMdExcludes can never drop
+  const managedPath = managedPolicyPath()
+  if (isFile(managedPath)) collectFile(managedPath, LABELS.managed, 0, seen, blocks, worktreeReal, excludes, skip)
+  const managedClaudeMd = managedClaudeMdContent()
+  if (managedClaudeMd !== undefined) {
+    blocks.push({ path: managedSettingsPath(), label: LABELS.managed, content: managedClaudeMd })
   }
-
-  collect(managedPolicyPath(), LABELS.managed)
-  collect(join(homedir(), ".claude", "CLAUDE.md"), LABELS.global)
-  for (const dir of ancestorDirs(directory)) collectDir(dir, seen, blocks, worktreeReal, skip)
+  const globalPath = join(homedir(), ".claude", "CLAUDE.md")
+  if (isFile(globalPath) && !isExcluded(globalPath, excludes)) {
+    collectFile(globalPath, LABELS.global, 0, seen, blocks, worktreeReal, excludes, skip)
+  }
+  for (const dir of ancestorDirs(directory)) collectDir(dir, seen, blocks, worktreeReal, excludes, skip)
 
   const text = render(
     blocks,
@@ -669,6 +768,7 @@ export default Plugin.define({
 
       await ctx.session.hook("context", async (input) => {
         try {
+          if (claudeMdsDisabled()) return
           // the context hook builds fresh system parts per request, so the
           // block rides every primary model call; no gate, nothing to
           // re-inject after compaction
@@ -704,6 +804,7 @@ export default Plugin.define({
       // path to the tool result, the way Claude Code does mid-session
       await ctx.tool.hook("execute.after", async (event) => {
         try {
+          if (claudeMdsDisabled()) return
           if (event.status !== "completed") return
           const isShell = event.tool === "shell"
           if (!isShell && !FILE_TOOLS.includes(event.tool)) return
@@ -717,12 +818,13 @@ export default Plugin.define({
           const rel = relative(state.directory, fileDir)
           if (rel === "" || rel.startsWith("..") || isAbsolute(rel)) return
           const blocks: Block[] = []
+          const excludes = claudeMdExcludes(worktreeRoot(state.directory))
           let dir = state.directory
           for (const segment of rel.split(sep)) {
             dir = join(dir, segment)
             if (state.dirs.has(dir)) continue
             state.dirs.add(dir)
-            collectDir(dir, state.files, blocks, state.worktreeReal)
+            collectDir(dir, state.files, blocks, state.worktreeReal, excludes)
           }
           const text = render(
             blocks,

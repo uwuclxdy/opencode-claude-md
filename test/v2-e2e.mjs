@@ -26,6 +26,11 @@
  *   5. the system channel carries the COMMENT-IN marker (HTML comments
  *      survive inside fenced code blocks) and never the COMMENT-OUT marker
  *      (comments outside code are stripped)
+ *   6. run 1 never carries the GLOBAL marker — claudeMdExcludes (a glob,
+ *      read from the user settings scope) drops the user-global file while
+ *      the ancestor chain stays injected
+ *   7. run 2 (CLAUDE_CODE_DISABLE_CLAUDE_MDS=1) carries none of the
+ *      markers — the off-switch injects nothing
  *
  * Isolation: every user-writable root is redirected into the fixture
  * (HOME, XDG_CONFIG_HOME, XDG_DATA_HOME, XDG_STATE_HOME, XDG_CACHE_HOME);
@@ -60,6 +65,7 @@ const PLUGIN_ENTRY = process.env.OPENCODE_PLUGIN_ENTRY ?? `file://${REPO}`
 const ANCESTOR = "OCM-E2E-ANCESTOR-MARKER"
 const COMMENT_IN = "OCM-E2E-COMMENT-IN-MARKER"
 const COMMENT_OUT = "OCM-E2E-COMMENT-OUT-MARKER"
+const GLOBAL = "OCM-E2E-GLOBAL-MARKER"
 const ESCAPED = "OCM-E2E-ESCAPED-IMPORT-MARKER"
 const QUOTED = "OCM-E2E-QUOTED-IMPORT-MARKER"
 const SUB = "OCM-E2E-SUBDIR-MARKER"
@@ -142,6 +148,7 @@ for (const d of [
   join(xdg, "state"),
   join(xdg, "cache"),
   join(home, ".bun"),
+  join(home, ".claude"),
   project,
   join(project, "sub"),
   join(project, "sub2"),
@@ -163,6 +170,10 @@ writeFileSync(join(project, "sub2", "CLAUDE.md"), `second subdir instructions\n$
 writeFileSync(join(project, "sub2", "other.txt"), "second subdir payload\n")
 writeFileSync(join(project, "sub3", "CLAUDE.md"), `third subdir instructions\n${SUB3}\n`)
 writeFileSync(join(project, "sub3", "notes.txt"), "third subdir payload\n")
+// claude code reads claudeMdExcludes from its settings scopes; the glob below
+// must drop the user-global file while the ancestor file stays injected
+writeFileSync(join(home, ".claude", "CLAUDE.md"), `user global instructions\n${GLOBAL}\n`)
+writeFileSync(join(home, ".claude", "settings.json"), JSON.stringify({ claudeMdExcludes: ["**/.claude/CLAUDE.md"] }, null, 2))
 
 const opencodeJson = {
   $schema: "https://opencode.ai/config.json",
@@ -213,37 +224,45 @@ const runEnv = {
 const runArgs = ["run", "--standalone", "--auto", "--format", "json", "--title", "e2e", "--log-level", "debug", "--print-logs", "-m", "capture/test", "read the file sub/file.txt then edit sub2/other.txt then say done"]
 // async spawn: the capture server shares this process's event loop, so a
 // sync wait would freeze it and leave the app's requests unanswered
-const child = spawn(BIN, runArgs, { cwd: project, env: runEnv, stdio: ["ignore", "pipe", "pipe"] })
-const childPid = child.pid
-let out = ""
-let errlog = ""
-child.stdout.on("data", (c) => (out += c))
-child.stderr.on("data", (c) => (errlog += c))
-const killTimer = setTimeout(() => child.kill("SIGKILL"), 90_000)
-const [exitCode, exitSignal] = await new Promise((res) => {
-  child.on("close", (code, signal) => res([code, signal]))
-})
-clearTimeout(killTimer)
+const runOpencode = async (extraEnv) => {
+  const startedAt = requests.length
+  const child = spawn(BIN, runArgs, { cwd: project, env: { ...runEnv, ...extraEnv }, stdio: ["ignore", "pipe", "pipe"] })
+  const childPid = child.pid
+  let out = ""
+  let errlog = ""
+  child.stdout.on("data", (c) => (out += c))
+  child.stderr.on("data", (c) => (errlog += c))
+  const killTimer = setTimeout(() => child.kill("SIGKILL"), 90_000)
+  const [code, signal] = await new Promise((res) => {
+    child.on("close", (c, s) => res([c, s]))
+  })
+  clearTimeout(killTimer)
+  // the probe's direct child must not outlive the test: the recorded pid is
+  // the only liveness handle; kill and assert removal by that pid, never a
+  // pattern (grandchildren are not tracked — the check may false-fail, never
+  // false-pass)
+  let stray = false
+  if (childPid && existsSync(`/proc/${childPid}`)) {
+    stray = true
+    try {
+      process.kill(childPid, "SIGKILL")
+    } catch {}
+    stray = existsSync(`/proc/${childPid}`)
+  }
+  if (stray) fail(`opencode process ${childPid} outlived the run — cleanup asserted, not assumed`)
+  const log = out + "\n--- stderr ---\n" + errlog
+  console.error(`app: status=${code} signal=${signal} stdout=${out.length}B stderr=${errlog.length}B requests=${requests.length - startedAt} fixture=${fixture}`)
+  if (process.env.E2E_VERBOSE) console.log(log)
+  if (signal) fail(`opencode run was killed (${signal}) — likely the 90s timeout; output tail:\n${log.slice(-3000)}`)
+  if (code !== 0) fail(`opencode run exited ${code}; output tail:\n${log.slice(-3000)}`)
+  return requests.slice(startedAt)
+}
+
+const first = await runOpencode()
+// claude code's off-switch: with the env set, nothing is injected at all
+const second = await runOpencode({ CLAUDE_CODE_DISABLE_CLAUDE_MDS: "1" })
 
 capture.close()
-
-const log = out + "\n--- stderr ---\n" + errlog
-console.error(`app: status=${exitCode} signal=${exitSignal} stdout=${out.length}B stderr=${errlog.length}B requests=${requests.length} fixture=${fixture}`)
-if (process.env.E2E_VERBOSE) console.log(log)
-
-// the probe's direct child must not outlive the test: the recorded pid is
-// the only liveness handle; kill and assert removal by that pid, never a
-// pattern (grandchildren are not tracked — the check may false-fail, never
-// false-pass)
-let stray = false
-if (childPid && existsSync(`/proc/${childPid}`)) {
-  stray = true
-  try {
-    process.kill(childPid, "SIGKILL")
-  } catch {}
-  stray = existsSync(`/proc/${childPid}`)
-}
-if (stray) fail(`opencode process ${childPid} outlived the run — cleanup asserted, not assumed`)
 
 let passed = false
 const cleanupFixture = () => {
@@ -251,16 +270,16 @@ const cleanupFixture = () => {
 }
 process.on("exit", cleanupFixture)
 
-if (exitSignal) fail(`opencode run was killed (${exitSignal}) — likely the 90s timeout; output tail:\n${log.slice(-3000)}`)
-if (exitCode !== 0) fail(`opencode run exited ${exitCode}; output tail:\n${log.slice(-3000)}`)
-
 if (process.env.E2E_DUMP) writeFileSync(join(fixture, "bodies.json"), JSON.stringify(requests, null, 2))
 
 // --- assertions ------------------------------------------------------------
 
-if (requests.length < 4) {
+if (first.length < 4) {
   // the fixture survives failures: its state dir holds the app's own debug log
-  fail(`expected >=4 captured model requests, got ${requests.length}; app output tail:\n${log.slice(-3000)}`)
+  fail(`expected >=4 captured model requests in run 1, got ${first.length}`)
+}
+if (second.length < 1) {
+  fail(`expected >=1 captured model request in run 2 (the off-switch run), got 0`)
 }
 
 const sysChannel = (body) => {
@@ -277,38 +296,45 @@ const toolChannel = (body) =>
     .map((m) => JSON.stringify(m))
     .join("")
 
-for (const [i, req] of requests.entries()) {
+for (const [i, req] of first.entries()) {
   const sys = sysChannel(req.body)
   const n = (sys.match(new RegExp(ANCESTOR, "g")) ?? []).length
   if (process.env.E2E_DEBUG) console.error(`DBG req${i + 1}: syslen=${sys.length} n=${n} roles=${JSON.stringify((req.body.messages ?? []).map((m) => m.role))}`)
-  if (n !== 1) fail(`request ${i + 1} carries the ancestor marker ${n}x in a system channel (want exactly 1) — injection is not per model call.\napp output tail:\n${log.slice(-3000)}`)
+  if (n !== 1) fail(`request ${i + 1} carries the ancestor marker ${n}x in a system channel (want exactly 1) — injection is not per model call.`)
+  if (sys.includes(GLOBAL)) fail(`request ${i + 1} carries the excluded user-global marker — claudeMdExcludes was not honored`)
 }
 
-if (!toolChannel(requests[1].body).includes(SUB)) {
-  fail(`request 2 carries no read-subdir marker inside a tool-role message — the read attach did not land.\ntool roles present: ${(requests[1].body.messages ?? []).map((m) => m.role).join(",")}`)
+if (!toolChannel(first[1].body).includes(SUB)) {
+  fail(`request 2 carries no read-subdir marker inside a tool-role message — the read attach did not land.\ntool roles present: ${(first[1].body.messages ?? []).map((m) => m.role).join(",")}`)
 }
-if (!sysChannel(requests[0].body).includes(ESCAPED)) {
+if (!sysChannel(first[0].body).includes(ESCAPED)) {
   fail(`request 1 carries no escaped-import marker in a system channel — a backslash-escaped space did not join into one path`)
 }
-if (sysChannel(requests[0].body).includes(QUOTED)) {
+if (sysChannel(first[0].body).includes(QUOTED)) {
   fail(`request 1 carries the quoted-import marker in a system channel — a quoted import path must never be imported`)
 }
-if (!sysChannel(requests[0].body).includes(COMMENT_IN)) {
+if (!sysChannel(first[0].body).includes(COMMENT_IN)) {
   fail(`request 1 carries no in-fence comment marker in a system channel — HTML comments inside code blocks must survive injection`)
 }
-if (sysChannel(requests[0].body).includes(COMMENT_OUT)) {
+if (sysChannel(first[0].body).includes(COMMENT_OUT)) {
   fail(`request 1 carries the outside-code comment marker in a system channel — HTML comments outside code must be stripped`)
 }
 
-if (!toolChannel(requests[2].body).includes(SUB3)) {
-  fail(`request 3 carries no shell-subdir marker inside a tool-role message — the shell-read attach did not land.\ntool roles present: ${(requests[2].body.messages ?? []).map((m) => m.role).join(",")}`)
+if (!toolChannel(first[2].body).includes(SUB3)) {
+  fail(`request 3 carries no shell-subdir marker inside a tool-role message — the shell-read attach did not land.\ntool roles present: ${(first[2].body.messages ?? []).map((m) => m.role).join(",")}`)
 }
-if (!toolChannel(requests[3].body).includes(SUB2)) {
-  fail(`request 4 carries no edit-subdir marker inside a tool-role message — the edit attach did not land.\ntool roles present: ${(requests[3].body.messages ?? []).map((m) => m.role).join(",")}`)
+if (!toolChannel(first[3].body).includes(SUB2)) {
+  fail(`request 4 carries no edit-subdir marker inside a tool-role message — the edit attach did not land.\ntool roles present: ${(first[3].body.messages ?? []).map((m) => m.role).join(",")}`)
 }
-for (const [i, body] of [requests[1].body, requests[2].body, requests[3].body].entries()) {
+for (const [i, body] of [first[1].body, first[2].body, first[3].body].entries()) {
   if (toolChannel(body).includes(ANCESTOR)) fail(`request ${i + 2} leaks the ancestor marker into a tool result — injection and subtree attach mixed`)
+}
+for (const [i, req] of second.entries()) {
+  const sys = sysChannel(req.body)
+  if (sys.includes(ANCESTOR) || sys.includes(GLOBAL) || sys.includes(COMMENT_IN)) {
+    fail(`off-switch run request ${i + 1} still carries injected instruction content — CLAUDE_CODE_DISABLE_CLAUDE_MDS must inject nothing`)
+  }
 }
 
 passed = true
-console.log("PASS: v2 e2e — per-call system injection, lazy subtree attach (read+shell+edit)")
+console.log("PASS: v2 e2e — per-call system injection, lazy subtree attach (read+shell+edit), claudeMdExcludes, off-switch")
